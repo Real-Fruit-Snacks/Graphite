@@ -1,0 +1,1154 @@
+import { App, Notice, Platform } from "obsidian";
+import { CreateTaskInput, PRIORITIES, Priority, RepeatRule } from "../types";
+import { getLabelColor, getProjectColor } from "../colors";
+import { dedupeLabels, displayLabel, normalizeLabelName } from "../labels";
+import {
+  getPriorityColor,
+  getPriorityDisplayLabel,
+  getPriorityDropdownLabel,
+  hasVisiblePriority
+} from "../priority";
+import { normalizeTaskProject, uniqueRealProjects } from "../projects";
+import { addDaysIso, formatDueDateChip, nextWeekdayIso, todayIso } from "../dateUtils";
+import { getRepeatChipLabel, getRepeatLabel, getRepeatPresets, repeatRulesEqual } from "../repeatUtils";
+import { CustomRepeatModal } from "./CustomRepeatModal";
+import { attachWikilinkAutocomplete } from "./wikilinkAutocomplete";
+import { attachQuickAddAutocomplete, parseQuickAddTokens } from "./quickAddAutocomplete";
+import { createSlateActionRow, createSlateButton } from "../ui";
+import { createSlateIcon } from "../ui/components/SlateIcon";
+
+interface ComposerOptions {
+  app: App;
+  projects: string[];
+  labels: string[];
+  labelColors: Record<string, string>;
+  projectColors: Record<string, string>;
+  defaultProject: string;
+  defaultDue?: string;
+  onCancel: () => void;
+  onEnsureLabel: (label: string) => void;
+  onSubmit: (input: CreateTaskInput) => Promise<void>;
+  presentation?: "default" | "mobile-screen";
+}
+
+export class AddTaskComposer {
+  private titleInput?: HTMLTextAreaElement;
+  private customProjectInput?: HTMLInputElement;
+  private selectedProjectValue = "";
+
+  render(parent: HTMLElement, options: ComposerOptions): () => void {
+    const form = parent.createEl("form", { cls: "slate-composer" });
+    const isMobileScreen = options.presentation === "mobile-screen";
+    form.toggleClass("is-mobile-screen", isMobileScreen);
+    let selectedDue = options.defaultDue || "";
+    let selectedRepeat: RepeatRule | undefined;
+    let selectedDeadline = "";
+    let selectedLabels: string[] = [];
+    let pendingAttachments: File[] = [];
+
+    this.titleInput = form.createEl("textarea", {
+      cls: "slate-composer-title",
+      attr: {
+        placeholder: "Task title",
+        rows: "1"
+      }
+    });
+    const resizeTitleInput = () => {
+      if (!this.titleInput) return;
+      const ownerWindow = this.titleInput.ownerDocument.defaultView || window;
+      const styles = ownerWindow.getComputedStyle(this.titleInput);
+      const lineHeight = Number.parseFloat(styles.lineHeight) || 22;
+      const paddingY =
+        (Number.parseFloat(styles.paddingTop) || 0) +
+        (Number.parseFloat(styles.paddingBottom) || 0);
+      const maxHeight = Math.ceil(lineHeight * 2 + paddingY);
+      this.titleInput.setCssStyles({
+        height: "auto",
+        overflowY: "hidden"
+      });
+      this.titleInput.setCssStyles({
+        height: `${Math.min(this.titleInput.scrollHeight, maxHeight)}px`,
+        overflowY: this.titleInput.scrollHeight > maxHeight ? "auto" : "hidden"
+      });
+    };
+    this.titleInput.addEventListener("input", resizeTitleInput);
+    resizeTitleInput();
+
+    const descriptionInput = form.createEl("textarea", {
+      cls: "slate-composer-description",
+      attr: {
+        placeholder: "Description"
+      }
+    });
+
+    const closeWikilinkDropdown = attachWikilinkAutocomplete(descriptionInput, options.app);
+    const closeQuickAddDropdown = attachQuickAddAutocomplete(
+      this.titleInput,
+      () => options.labels,
+      () => options.projects
+    );
+    this.titleInput.addEventListener("keydown", (event) => {
+      if (
+        event.defaultPrevented ||
+        event.key !== "Enter" ||
+        event.shiftKey ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      form.requestSubmit();
+    });
+
+    const chipRow = form.createDiv({ cls: "slate-composer-chip-row" });
+    const dueDateWrap = chipRow.createDiv({ cls: "slate-date-picker-wrap" });
+    const repeatChipWrap = chipRow.createDiv({ cls: "slate-repeat-chip-wrap" });
+
+    const priorityWrap = chipRow.createDiv({ cls: "slate-chip-select-wrap" });
+    createIcon(priorityWrap, "priority");
+    const priorityIndicator = priorityWrap.createSpan({ cls: "slate-priority-indicator" });
+    const priorityDisplay = priorityWrap.createSpan({ cls: "slate-priority-display" });
+    const prioritySelect = priorityWrap.createEl("select", {
+      cls: "slate-chip-select",
+      attr: {
+        "aria-label": "Priority"
+      }
+    });
+    for (const priority of PRIORITIES.filter((priority) => priority !== "none")) {
+      prioritySelect.createEl("option", {
+        text: getPriorityDropdownLabel(priority),
+        value: priority
+      });
+    }
+    prioritySelect.value = "P4";
+    const updatePriorityStyle = () => {
+      const priority = prioritySelect.value as Priority;
+      const color = getPriorityColor(priority);
+      priorityWrap.setCssProps({
+        "--slate-priority-text": color.color,
+        "--slate-priority-bg": color.light,
+        "--slate-priority-border": color.color
+      });
+      priorityWrap.toggleClass("has-priority", hasVisiblePriority(priority));
+      priorityIndicator.setCssStyles({ backgroundColor: color.color });
+      priorityDisplay.setText(getPriorityDisplayLabel(priority));
+    };
+    prioritySelect.addEventListener("change", updatePriorityStyle);
+    updatePriorityStyle();
+
+    const attachmentButton = createChipButton(chipRow, "Attachment", "paperclip");
+    const attachmentInput = chipRow.createEl("input", {
+      cls: "is-hidden",
+      attr: {
+        type: "file",
+        multiple: "true"
+      }
+    });
+    const pendingAttachmentsEl = form.createDiv({
+      cls: "slate-composer-attachments is-hidden"
+    });
+
+    const renderPendingAttachments = () => {
+      pendingAttachmentsEl.empty();
+      pendingAttachmentsEl.toggleClass("is-hidden", pendingAttachments.length === 0);
+
+      for (const [index, file] of pendingAttachments.entries()) {
+        const item = pendingAttachmentsEl.createDiv({ cls: "slate-composer-attachment" });
+        createSlateIcon(item, isImageFile(file) ? "attachment" : "file", {
+          className: "slate-composer-attachment-icon"
+        });
+        item.createDiv({ cls: "slate-composer-attachment-name", text: file.name });
+        const removeButton = item.createEl("button", {
+          cls: "slate-composer-attachment-remove",
+          attr: {
+            type: "button",
+            "aria-label": `Remove ${file.name}`
+          }
+        });
+        createSlateIcon(removeButton, "close");
+        removeButton.addEventListener("click", () => {
+          pendingAttachments = pendingAttachments.filter((_, candidateIndex) => candidateIndex !== index);
+          renderPendingAttachments();
+        });
+      }
+    };
+    attachmentButton.addEventListener("click", () => {
+      attachmentInput.click();
+    });
+    attachmentInput.addEventListener("change", () => {
+      pendingAttachments = [
+        ...pendingAttachments,
+        ...Array.from(attachmentInput.files || [])
+      ];
+      attachmentInput.value = "";
+      renderPendingAttachments();
+    });
+
+    const mobilePanelSide = Platform.isMobile ? "above" : "below";
+    const labelsWrap = chipRow.createDiv({ cls: "slate-composer-labels-wrap" });
+    const labelsButton = createChipButton(labelsWrap, "Labels", "tag");
+    const deadlineWrap = chipRow.createDiv({ cls: "slate-composer-deadline-wrap" });
+
+    const labelsPanel = labelsWrap.createDiv({ cls: "slate-composer-popover is-hidden" });
+    const selectedLabelsEl = labelsPanel.createDiv({ cls: "slate-selected-labels" });
+    const labelInput = labelsPanel.createEl("input", {
+      cls: "slate-label-input",
+      attr: {
+        type: "text",
+        placeholder: "#label"
+      }
+    });
+    const labelSuggestions = labelsPanel.createDiv({ cls: "slate-label-suggestions" });
+
+    const labelChipsRow = form.createDiv({ cls: "slate-composer-label-chips is-hidden" });
+
+    let detachOutsideListener = () => undefined;
+    let closeProjectMenu = () => undefined;
+    let closeDueDatePopover: () => void = () => undefined;
+    let closeDeadlinePanel: () => void = () => undefined;
+
+    const clearOutsideListener = () => {
+      detachOutsideListener();
+      detachOutsideListener = () => undefined;
+    };
+
+    const closePanels = () => {
+      labelsPanel.addClass("is-hidden");
+      closeDeadlinePanel();
+    };
+
+    const closeComposerPopovers = () => {
+      closePanels();
+      closeProjectMenu();
+      closeDueDatePopover();
+      clearOutsideListener();
+    };
+
+    const watchLocalPopover = (
+      wrapper: HTMLElement,
+      popover: HTMLElement,
+      options: LocalPopoverOptions = {}
+    ) => {
+      clearOutsideListener();
+      alignLocalPopover(wrapper, popover, options);
+      const ownerDocument = wrapper.ownerDocument;
+      const handleOutsideClick = (event: PointerEvent) => {
+        if (
+          event.target instanceof Node &&
+          (wrapper.contains(event.target) || popover.contains(event.target))
+        ) {
+          return;
+        }
+
+        closeComposerPopovers();
+      };
+
+      ownerDocument.addEventListener("pointerdown", handleOutsideClick, true);
+      detachOutsideListener = () => {
+        ownerDocument.removeEventListener("pointerdown", handleOutsideClick, true);
+      };
+    };
+
+    const keepLabelInputVisible = () => {
+      const ownerWindow = labelInput.ownerDocument.defaultView || window;
+      const scrollIntoView = () => {
+        labelInput.scrollIntoView({
+          block: "center",
+          inline: "nearest",
+          behavior: "smooth"
+        });
+      };
+
+      ownerWindow.setTimeout(scrollIntoView, 80);
+      ownerWindow.setTimeout(scrollIntoView, 320);
+      ownerWindow.setTimeout(scrollIntoView, 650);
+    };
+
+    labelsButton.addEventListener("click", () => {
+      const shouldOpen = labelsPanel.hasClass("is-hidden");
+      closeComposerPopovers();
+      if (shouldOpen) {
+        labelsPanel.removeClass("is-hidden");
+        watchLocalPopover(labelsWrap, labelsPanel, { preferredSide: mobilePanelSide });
+        labelInput.focus();
+        keepLabelInputVisible();
+      }
+    });
+    const renderDeadlineButton = () => {
+      deadlineWrap.empty();
+      const hasDeadline = Boolean(selectedDeadline);
+      const btn = deadlineWrap.createEl("button", {
+        cls: `slate-chip-button${hasDeadline ? " slate-date-chip is-active is-selected" : ""}`,
+        attr: { type: "button", "aria-label": "Set deadline" }
+      });
+      createIcon(btn, "deadline");
+      btn.createSpan({
+        cls: "slate-chip-label",
+        text: hasDeadline ? formatDueDateChip(selectedDeadline) : "Deadline"
+      });
+
+      if (hasDeadline) {
+        const clearSpan = createSlateIcon(btn, "close", { className: "slate-deadline-clear" });
+        clearSpan.addEventListener("click", (e) => {
+          e.stopPropagation();
+          selectedDeadline = "";
+          closeDeadlinePanel();
+          renderDeadlineButton();
+        });
+      }
+
+      const panel = deadlineWrap.createDiv({ cls: "slate-composer-popover slate-date-popover is-hidden" });
+      panel.createDiv({ cls: "slate-popover-title", text: "Deadline" });
+      closeDeadlinePanel = () => {
+        panel.addClass("is-hidden");
+        panel.removeClass("is-calendar-open");
+      };
+      let canSelectDeadline = !Platform.isMobile;
+
+      const selectDeadline = (value: string) => {
+        if (!canSelectDeadline) {
+          return;
+        }
+
+        selectedDeadline = value;
+        closeDeadlinePanel();
+        clearOutsideListener();
+        renderDeadlineButton();
+      };
+
+      const addPreset = (label: string, value: string) => {
+        const presetBtn = panel.createEl("button", {
+          cls: "slate-date-preset",
+          text: label,
+          attr: { type: "button" }
+        });
+        presetBtn.toggleClass("is-active", value === selectedDeadline);
+        presetBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectDeadline(value);
+        });
+      };
+
+      addPreset("Today", todayIso());
+      addPreset("Tomorrow", addDaysIso(1));
+      addPreset("Next week", addDaysIso(7));
+      addPreset("Next weekend", nextWeekdayIso(6));
+      renderComposerCustomDatePicker(panel, selectedDeadline, selectDeadline);
+
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const shouldOpen = panel.hasClass("is-hidden");
+        closeComposerPopovers();
+        if (shouldOpen) {
+          canSelectDeadline = !Platform.isMobile;
+          const ownerWindow = btn.ownerDocument.defaultView || window;
+          ownerWindow.setTimeout(() => {
+            panel.removeClass("is-hidden");
+            watchLocalPopover(deadlineWrap, panel, { preferredSide: mobilePanelSide });
+
+            if (Platform.isMobile) {
+              ownerWindow.setTimeout(() => {
+                canSelectDeadline = true;
+              }, 250);
+            }
+          }, 0);
+        }
+      });
+    };
+    renderDeadlineButton();
+
+    const addLabel = (value: string) => {
+      const label = normalizeLabelName(value);
+      if (!label || selectedLabels.includes(label)) {
+        labelInput.value = "";
+        renderLabels();
+        return;
+      }
+
+      selectedLabels = [...selectedLabels, label];
+      options.onEnsureLabel(label);
+      labelInput.value = "";
+      renderLabels();
+    };
+
+    const renderLabels = () => {
+      selectedLabelsEl.empty();
+      labelChipsRow.empty();
+      labelChipsRow.toggleClass("is-hidden", selectedLabels.length === 0);
+
+      for (const label of selectedLabels) {
+        const color = getLabelColor(label, options.labelColors);
+        const removeLabel = () => {
+          selectedLabels = selectedLabels.filter((c) => c !== label);
+          renderLabels();
+        };
+
+        const chip = selectedLabelsEl.createEl("button", {
+          cls: "slate-selected-label",
+          text: displayLabel(label),
+          attr: { type: "button" }
+        });
+        chip.setCssStyles({ backgroundColor: color.light, borderColor: color.light });
+        chip.addEventListener("click", removeLabel);
+
+        const externalChip = labelChipsRow.createEl("span", {
+          cls: "slate-label-chip",
+          attr: { "aria-label": `Remove label ${displayLabel(label)}` }
+        });
+        externalChip.setCssProps({ "--slate-label-chip-color": color.regular, "--slate-label-chip-bg": color.light });
+        createIcon(externalChip, "tag");
+        externalChip.createSpan({ cls: "slate-label-chip-name", text: displayLabel(label) });
+        const removeBtn = externalChip.createEl("button", {
+          cls: "slate-label-chip-remove",
+          attr: { type: "button", "aria-label": `Remove ${displayLabel(label)}` }
+        });
+        createIcon(removeBtn, "close");
+        removeBtn.addEventListener("click", removeLabel);
+      }
+
+      labelSuggestions.empty();
+      const query = normalizeLabelName(labelInput.value);
+      if (!query) {
+        labelSuggestions.createDiv({
+          cls: "slate-label-empty",
+          text: "Type a label name"
+        });
+        return;
+      }
+
+      const matches = dedupeLabels(options.labels)
+        .filter((label) => label.includes(query) && !selectedLabels.includes(label))
+        .slice(0, 8);
+
+      for (const label of matches) {
+        const suggestion = labelSuggestions.createEl("button", {
+          cls: "slate-label-suggestion",
+          text: displayLabel(label),
+          attr: { type: "button" }
+        });
+        suggestion.addEventListener("click", () => addLabel(label));
+      }
+
+      if (!dedupeLabels(options.labels).includes(query) && !selectedLabels.includes(query)) {
+        const create = labelSuggestions.createEl("button", {
+          cls: "slate-label-suggestion",
+          text: `Create label: ${displayLabel(query)}`,
+          attr: { type: "button" }
+        });
+        create.addEventListener("click", () => addLabel(query));
+      }
+    };
+
+    labelInput.addEventListener("focus", () => {
+      if (!labelInput.value) {
+        labelInput.value = "#";
+      }
+      keepLabelInputVisible();
+    });
+    labelInput.addEventListener("input", () => {
+      if (labelInput.value && !labelInput.value.startsWith("#")) {
+        labelInput.value = `#${labelInput.value}`;
+      }
+      renderLabels();
+    });
+    labelInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addLabel(labelInput.value);
+      }
+      if (event.key === "Escape") {
+        closeComposerPopovers();
+      }
+    });
+    renderLabels();
+
+    const footer = form.createDiv({ cls: "slate-composer-footer" });
+    const projectArea = footer.createDiv({ cls: "slate-composer-project" });
+
+    const projectPicker = projectArea.createEl("button", {
+      cls: "slate-project-picker slate-location-picker",
+      attr: {
+        type: "button",
+        "aria-haspopup": "listbox",
+        "aria-expanded": "false"
+      }
+    });
+    const projectDot = projectPicker.createSpan({ cls: "slate-project-dot slate-composer-project-dot" });
+    const projectLabel = projectPicker.createSpan({ cls: "slate-project-trigger-label" });
+    const projectMenu = createEl("div", {
+      cls: "slate-project-menu",
+      attr: {
+        role: "listbox"
+      }
+    });
+    const projects = uniqueRealProjects([options.defaultProject, ...options.projects]);
+    const defaultProject = normalizeTaskProject(options.defaultProject) || "";
+    this.selectedProjectValue = projects.includes(defaultProject)
+      ? defaultProject
+      : "";
+
+    const customProjectWrap = projectArea.createDiv({ cls: "slate-custom-project-wrap is-hidden" });
+    this.customProjectInput = customProjectWrap.createEl("input", {
+      cls: "slate-chip-input slate-custom-project",
+      attr: {
+        type: "text",
+        placeholder: "Project name"
+      }
+    });
+    const confirmProjectBtn = customProjectWrap.createEl("button", {
+      cls: "slate-custom-project-confirm",
+      attr: { type: "button", "aria-label": "Confirm project" }
+    });
+    createSlateIcon(confirmProjectBtn, "completed");
+
+    const cancelProjectBtn = customProjectWrap.createEl("button", {
+      cls: "slate-custom-project-cancel",
+      attr: { type: "button", "aria-label": "Cancel" }
+    });
+    createSlateIcon(cancelProjectBtn, "close");
+
+    let previousProjectValue = "";
+
+    const confirmProject = () => {
+      const name = this.customProjectInput?.value.trim() || "";
+      if (!name) return;
+      this.selectedProjectValue = name;
+      updateProjectDot();
+      renderProjectMenu();
+      customProjectWrap.addClass("is-hidden");
+    };
+
+    const cancelProject = () => {
+      this.selectedProjectValue = previousProjectValue;
+      this.customProjectInput!.value = "";
+      customProjectWrap.addClass("is-hidden");
+      updateProjectDot();
+      renderProjectMenu();
+    };
+
+    confirmProjectBtn.addEventListener("click", confirmProject);
+    cancelProjectBtn.addEventListener("click", cancelProject);
+    this.customProjectInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); confirmProject(); }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelProject(); }
+    });
+
+    closeProjectMenu = () => {
+      projectMenu.remove();
+      projectPicker.setAttr("aria-expanded", "false");
+      projectPicker.focus({ preventScroll: true });
+    };
+
+    const openProjectMenu = () => {
+      activeDocument.body.appendChild(projectMenu);
+      projectPicker.setAttr("aria-expanded", "true");
+      watchLocalPopover(projectArea, projectMenu, { preferredSide: "above", useFixed: true });
+    };
+
+    const selectProject = (value: string) => {
+      if (value === "__new__") {
+        previousProjectValue = this.selectedProjectValue;
+      }
+      this.selectedProjectValue = value;
+      if (value === "__new__") {
+        customProjectWrap.removeClass("is-hidden");
+        this.customProjectInput!.value = "";
+        closeProjectMenu();
+        clearOutsideListener();
+        this.customProjectInput?.focus();
+      } else {
+        customProjectWrap.addClass("is-hidden");
+        closeProjectMenu();
+        clearOutsideListener();
+      }
+      updateProjectDot();
+      renderProjectMenu();
+    };
+
+    const renderProjectOption = (
+      parent: HTMLElement,
+      label: string,
+      value: string,
+      projectColor?: { regular: string; light: string }
+    ) => {
+      const option = parent.createEl("button", {
+        cls: "slate-project-option",
+        attr: {
+          type: "button",
+          role: "option",
+          "aria-selected": String(this.selectedProjectValue === value)
+        }
+      });
+      option.toggleClass("is-selected", this.selectedProjectValue === value);
+      option.toggleClass("has-project", Boolean(projectColor));
+      option.createSpan({
+        cls: "slate-project-option-check",
+        text: this.selectedProjectValue === value ? "✓" : ""
+      });
+      if (projectColor) {
+        option
+          .createSpan({ cls: "slate-project-dot" })
+          .setCssStyles({ backgroundColor: projectColor.regular });
+      }
+      option.createSpan({ cls: "slate-project-option-label", text: label });
+      option.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        selectProject(value);
+      });
+    };
+
+    const renderProjectMenu = () => {
+      projectMenu.empty();
+      renderProjectOption(projectMenu, "Inbox", "");
+      projectMenu.createDiv({ cls: "slate-project-section-label", text: "Projects" });
+
+      for (const project of projects) {
+        renderProjectOption(
+          projectMenu,
+          project,
+          project,
+          getProjectColor(project, options.projectColors)
+        );
+      }
+
+      renderProjectOption(projectMenu, "New project...", "__new__");
+    };
+
+    const updateProjectDot = () => {
+      const displayValue = this.selectedProjectValue === "__new__" ? previousProjectValue : this.selectedProjectValue;
+      const project = normalizeTaskProject(displayValue) || "";
+      projectLabel.setText(project || "Inbox");
+      if (!project) {
+        projectDot.setCssStyles({ backgroundColor: "var(--slate-faint)" });
+        projectPicker.setCssStyles({
+          backgroundColor: "var(--slate-hover)",
+          borderColor: "var(--slate-border)"
+        });
+        return;
+      }
+
+      const color = getProjectColor(project, options.projectColors);
+      projectDot.setCssStyles({ backgroundColor: color.regular });
+      projectPicker.setCssStyles({
+        backgroundColor: color.light,
+        borderColor: color.light
+      });
+    };
+
+    const hasOpenComposerPopover = () =>
+      !labelsPanel.hasClass("is-hidden") ||
+      Boolean(deadlineWrap.querySelector(".slate-composer-popover:not(.is-hidden)")) ||
+      projectMenu.isConnected ||
+      Boolean(dueDateWrap.querySelector(".slate-date-popover:not(.is-hidden)"));
+
+    projectPicker.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const shouldOpen = !projectMenu.isConnected;
+      closeComposerPopovers();
+      if (shouldOpen) {
+        openProjectMenu();
+      }
+    });
+    form.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && hasOpenComposerPopover()) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeComposerPopovers();
+      }
+    });
+    this.customProjectInput.addEventListener("input", () => {
+      updateProjectDot();
+      renderProjectMenu();
+    });
+    renderProjectMenu();
+    updateProjectDot();
+
+    const actions = createSlateActionRow(footer, { className: "slate-composer-actions" });
+    const cancelButton = createSlateButton(actions, { text: "Cancel" });
+    const addButton = createSlateButton(actions, {
+      text: "Add task",
+      variant: "primary",
+      attr: {
+        type: "submit"
+      }
+    });
+
+    const cleanup = () => { projectMenu.remove(); closeWikilinkDropdown(); closeQuickAddDropdown(); };
+    cancelButton.addEventListener("click", () => { cleanup(); options.onCancel(); });
+    form.addEventListener("submit", () => cleanup());
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+
+      const rawTitle = this.titleInput?.value || "";
+      const parsed = parseQuickAddTokens(rawTitle);
+      if (!parsed.title.trim()) {
+        this.titleInput?.focus();
+        return;
+      }
+
+      addButton.setAttr("disabled", "true");
+      void (async () => {
+        try {
+          const explicitProject = this.readProject();
+          await options.onSubmit({
+            title: parsed.title,
+            description: descriptionInput.value,
+            due: selectedDue,
+            deadline: selectedDeadline,
+            project: explicitProject || parsed.project || "",
+            priority: prioritySelect.value as Priority,
+            labels: dedupeLabels([...selectedLabels, ...parsed.labels]),
+            pendingAttachments,
+            repeat: selectedRepeat
+          });
+        } finally {
+          addButton.removeAttribute("disabled");
+        }
+      })();
+    });
+
+    const renderDueDateButton = () => {
+      dueDateWrap.empty();
+      const hasDate = Boolean(selectedDue);
+      const dueDateButton = dueDateWrap.createEl("button", {
+        cls: `slate-chip-button slate-date-chip${hasDate ? " is-active is-selected" : ""}`,
+        attr: { type: "button", "aria-label": "Set due date" }
+      });
+      createSlateIcon(dueDateButton, "calendar", { className: "slate-chip-icon" });
+      dueDateButton.createSpan({ cls: "slate-chip-label", text: formatDueDateChip(selectedDue) });
+
+      if (hasDate) {
+        const clearBtn = dueDateWrap.createEl("button", {
+          cls: "slate-date-chip-clear",
+          attr: { type: "button", "aria-label": "Clear due date" }
+        });
+        createSlateIcon(clearBtn, "close");
+        clearBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (selectedRepeat) new Notice("Date and repeat rule removed.");
+          selectedDue = "";
+          selectedRepeat = undefined;
+          closeDueDatePopover();
+          renderDueDateButton();
+          renderRepeatChip();
+        });
+      }
+
+      const datePopover = dueDateWrap.createDiv({ cls: "slate-composer-popover slate-date-popover is-hidden" });
+      closeDueDatePopover = () => {
+        datePopover.addClass("is-hidden");
+        datePopover.removeClass("is-calendar-open");
+      };
+
+      const selectDate = (value: string) => {
+        selectedDue = value;
+        closeDueDatePopover();
+        clearOutsideListener();
+        renderDueDateButton();
+        renderRepeatChip();
+      };
+
+      const addPreset = (label: string, value: string) => {
+        const btn = datePopover.createEl("button", {
+          cls: "slate-date-preset",
+          text: label,
+          attr: { type: "button" }
+        });
+        btn.toggleClass("is-active", value === selectedDue);
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          selectDate(value);
+        });
+      };
+
+      addPreset("Today", todayIso());
+      addPreset("Tomorrow", addDaysIso(1));
+      addPreset("Next week", addDaysIso(7));
+      addPreset("Next weekend", nextWeekdayIso(6));
+
+      renderComposerCustomDatePicker(datePopover, selectedDue, selectDate);
+
+      datePopover.createDiv({ cls: "slate-date-divider" });
+      const repeatHeader = datePopover.createDiv({ cls: "slate-repeat-header" });
+      createSlateIcon(repeatHeader, "recurring", { className: "slate-chip-icon" });
+      repeatHeader.createSpan({ text: "Repeat" });
+
+      const presetDue = selectedDue || todayIso();
+      const presets = getRepeatPresets(presetDue);
+      for (const preset of presets) {
+        const btn = datePopover.createEl("button", {
+          cls: "slate-date-preset",
+          attr: { type: "button" }
+        });
+        createSlateIcon(btn, "recurring", { className: "slate-chip-icon" });
+        btn.createSpan({ text: preset.label });
+        btn.toggleClass("is-active", repeatRulesEqual(preset.rule, selectedRepeat));
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!selectedDue) selectedDue = todayIso();
+          selectedRepeat = repeatRulesEqual(preset.rule, selectedRepeat) ? undefined : preset.rule;
+          closeDueDatePopover();
+          clearOutsideListener();
+          renderDueDateButton();
+          renderRepeatChip();
+        });
+      }
+      const customRepeatBtn = datePopover.createEl("button", {
+        cls: "slate-date-preset",
+        text: "Custom...",
+        attr: { type: "button" }
+      });
+      customRepeatBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!selectedDue) selectedDue = todayIso();
+        closeDueDatePopover();
+        clearOutsideListener();
+        new CustomRepeatModal(options.app, selectedRepeat, (rule) => {
+          selectedRepeat = rule;
+          renderDueDateButton();
+          renderRepeatChip();
+        }).open();
+      });
+
+      dueDateButton.addEventListener("click", () => {
+        const shouldOpen = datePopover.hasClass("is-hidden");
+        closeComposerPopovers();
+        if (shouldOpen) {
+          datePopover.removeClass("is-hidden");
+          watchLocalPopover(dueDateWrap, datePopover, { preferredSide: mobilePanelSide });
+        }
+      });
+    };
+
+    const renderRepeatChip = () => {
+      repeatChipWrap.empty();
+      if (!selectedRepeat) return;
+      const fullLabel = getRepeatLabel(selectedRepeat);
+      const chip = repeatChipWrap.createEl("button", {
+        cls: "slate-chip-button slate-repeat-chip is-active is-selected",
+        attr: { type: "button", title: fullLabel, "aria-label": fullLabel }
+      });
+      createSlateIcon(chip, "recurring", { className: "slate-chip-icon" });
+      chip.createSpan({ cls: "slate-chip-label", text: getRepeatChipLabel(selectedRepeat) });
+      chip.addEventListener("click", () => {
+        const shouldOpen = dueDateWrap.querySelector(".slate-date-popover:not(.is-hidden)") === null;
+        closeComposerPopovers();
+        if (shouldOpen) {
+          const popover = dueDateWrap.querySelector<HTMLElement>(".slate-date-popover");
+          if (popover) {
+            popover.removeClass("is-hidden");
+            watchLocalPopover(dueDateWrap, popover, { preferredSide: mobilePanelSide });
+          }
+        }
+      });
+      const clearRepeat = repeatChipWrap.createEl("button", {
+        cls: "slate-date-chip-clear",
+        attr: { type: "button", "aria-label": "Clear repeat" }
+      });
+      createSlateIcon(clearRepeat, "close");
+      clearRepeat.addEventListener("click", (e) => {
+        e.stopPropagation();
+        selectedRepeat = undefined;
+        renderRepeatChip();
+        renderDueDateButton();
+      });
+    };
+
+    renderDueDateButton();
+    renderRepeatChip();
+    return cleanup;
+  }
+
+  focus(options?: FocusOptions): void {
+    this.titleInput?.focus(options);
+  }
+
+  focusTitleForMobileCapture(): void {
+    const input = this.titleInput;
+    if (!input) return;
+
+    const ownerWindow = input.ownerDocument.defaultView || window;
+    input.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
+    input.focus();
+
+    ownerWindow.setTimeout(() => {
+      input.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    }, 250);
+  }
+
+  private readProject(): string | undefined {
+    return normalizeTaskProject(this.selectedProjectValue);
+  }
+}
+
+function createChipButton(
+  parent: HTMLElement,
+  label: string,
+  iconName: string,
+  ariaLabel?: string
+): HTMLButtonElement {
+  const button = parent.createEl("button", {
+    cls: "slate-chip-button",
+    attr: {
+      type: "button"
+    }
+  });
+
+  if (ariaLabel) {
+    button.setAttr("aria-label", ariaLabel);
+  }
+  if (!label) {
+    button.addClass("is-icon-only");
+  }
+
+  createIcon(button, iconName);
+  if (label) {
+    button.createSpan({ cls: "slate-chip-label", text: label });
+  }
+
+  return button;
+}
+
+function createIcon(
+  parent: HTMLElement,
+  iconName: string,
+  className = "slate-chip-icon"
+): HTMLElement {
+  return createSlateIcon(parent, iconName, { className });
+}
+
+interface LocalPopoverOptions {
+  preferredSide?: "above" | "below";
+  useFixed?: boolean;
+}
+
+function alignLocalPopover(
+  wrapper: HTMLElement,
+  popover: HTMLElement,
+  options: LocalPopoverOptions = {}
+): void {
+  const margin = 12;
+  const preferredSide = options.preferredSide || "below";
+
+  popover.removeClass("is-align-right");
+  popover.removeClass("is-open-up");
+  popover.removeClass("is-open-down");
+  popover.setCssProps({ "--slate-popover-shift-x": "0px" });
+
+  const wrapperRect = wrapper.getBoundingClientRect();
+
+  if (options.useFixed) {
+    // Fixed positioning — use viewport coordinates so containers with
+    // overflow:hidden or transforms cannot clip the popover.
+    popover.setCssStyles({
+      top: "",
+      bottom: "",
+      left: "",
+      right: ""
+    });
+
+    const popoverWidth = popover.offsetWidth || 240;
+    const popoverHeight = popover.offsetHeight || 220;
+
+    let left = wrapperRect.left;
+    if (left + popoverWidth > window.innerWidth - margin) {
+      left = wrapperRect.right - popoverWidth;
+    }
+    const fixedStyles: Partial<CSSStyleDeclaration> = {
+      left: `${Math.max(margin, left)}px`
+    };
+
+    const fitsBelow = wrapperRect.bottom + popoverHeight + margin <= window.innerHeight;
+    const fitsAbove = wrapperRect.top - popoverHeight - margin >= 0;
+    if ((preferredSide === "above" && fitsAbove) || (preferredSide === "above" && !fitsBelow)) {
+      fixedStyles.bottom = `${window.innerHeight - wrapperRect.top + 8}px`;
+      popover.addClass("is-open-up");
+    } else {
+      fixedStyles.top = `${wrapperRect.bottom + 8}px`;
+      popover.addClass("is-open-down");
+    }
+    popover.setCssStyles(fixedStyles);
+    return;
+  }
+
+  const popoverRect = popover.getBoundingClientRect();
+  const popoverWidth = popoverRect.width || 240;
+  const popoverHeight = popoverRect.height || 220;
+  const ownerWindow = wrapper.ownerDocument.defaultView || window;
+
+  let shiftX = 0;
+  const rightOverflow = wrapperRect.left + popoverWidth - (ownerWindow.innerWidth - margin);
+  if (rightOverflow > 0) {
+    shiftX -= rightOverflow;
+  }
+  const shiftedLeft = wrapperRect.left + shiftX;
+  if (shiftedLeft < margin) {
+    shiftX += margin - shiftedLeft;
+  }
+  if (shiftX !== 0) {
+    popover.setCssProps({ "--slate-popover-shift-x": `${Math.round(shiftX)}px` });
+  }
+
+  const fitsBelow = wrapperRect.bottom + popoverHeight + margin <= ownerWindow.innerHeight;
+  const fitsAbove = wrapperRect.top - popoverHeight - margin >= 0;
+  if (preferredSide === "above" && fitsAbove) {
+    popover.addClass("is-open-up");
+    return;
+  }
+  if (preferredSide === "above" && !fitsBelow) {
+    popover.addClass("is-open-up");
+    return;
+  }
+  if (preferredSide === "below" && !fitsBelow && fitsAbove) {
+    popover.addClass("is-open-up");
+    return;
+  }
+
+  popover.addClass("is-open-down");
+}
+
+function renderComposerCustomDatePicker(
+  parent: HTMLElement,
+  currentValue: string | undefined,
+  onSelect: (value: string) => void
+): void {
+  const today = todayIso();
+  const initialDate = currentValue ? new Date(`${currentValue}T00:00:00`) : new Date();
+  let viewYear = initialDate.getFullYear();
+  let viewMonth = initialDate.getMonth();
+
+  const container = parent.createDiv({ cls: "slate-date-custom-wrap" });
+  const trigger = container.createEl("button", {
+    cls: "slate-date-preset slate-cal-trigger",
+    attr: { type: "button" }
+  });
+  trigger.createSpan({ text: currentValue ? formatDueDateChip(currentValue) : "Custom date..." });
+  trigger.toggleClass("is-active", Boolean(currentValue));
+
+  const calendarWrap = container.createDiv({ cls: "slate-cal-wrap is-hidden" });
+
+  const renderCalendar = () => {
+    calendarWrap.empty();
+
+    const header = calendarWrap.createDiv({ cls: "slate-cal-header" });
+    const previousButton = header.createEl("button", {
+      cls: "slate-cal-nav",
+      text: "‹",
+      attr: { type: "button" }
+    });
+    header.createSpan({
+      cls: "slate-cal-title",
+      text: new Date(viewYear, viewMonth, 1).toLocaleDateString(undefined, {
+        month: "long",
+        year: "numeric"
+      })
+    });
+    const nextButton = header.createEl("button", {
+      cls: "slate-cal-nav",
+      text: "›",
+      attr: { type: "button" }
+    });
+
+    previousButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      previousButton.blur();
+      viewMonth -= 1;
+      if (viewMonth < 0) {
+        viewMonth = 11;
+        viewYear -= 1;
+      }
+      renderCalendar();
+    });
+    nextButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      nextButton.blur();
+      viewMonth += 1;
+      if (viewMonth > 11) {
+        viewMonth = 0;
+        viewYear += 1;
+      }
+      renderCalendar();
+    });
+
+    const grid = calendarWrap.createDiv({ cls: "slate-cal-grid" });
+    for (const dayName of ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]) {
+      grid.createSpan({ cls: "slate-cal-day-hdr", text: dayName });
+    }
+
+    const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+    const leadingEmptyDays = firstDay === 0 ? 6 : firstDay - 1;
+    for (let index = 0; index < leadingEmptyDays; index += 1) {
+      grid.createDiv({ cls: "slate-cal-day is-empty" });
+    }
+
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const iso = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const dayButton = grid.createEl("button", {
+        cls: "slate-cal-day",
+        text: String(day),
+        attr: { type: "button" }
+      });
+      dayButton.toggleClass("is-today", iso === today);
+      dayButton.toggleClass("is-selected", iso === currentValue);
+      dayButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onSelect(iso);
+      });
+    }
+
+    const renderedCells = leadingEmptyDays + daysInMonth;
+    const trailingEmptyDays = 42 - renderedCells;
+    for (let index = 0; index < trailingEmptyDays; index += 1) {
+      grid.createDiv({ cls: "slate-cal-day is-empty" });
+    }
+  };
+
+  trigger.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const opening = calendarWrap.hasClass("is-hidden");
+    parent.toggleClass("is-calendar-open", opening);
+    calendarWrap.toggleClass("is-hidden", !opening);
+    if (opening) {
+      renderCalendar();
+      const ownerWindow = parent.ownerDocument.defaultView || window;
+      ownerWindow.requestAnimationFrame(() => clampPopoverToViewport(parent));
+    }
+  });
+}
+
+function clampPopoverToViewport(popover: HTMLElement): void {
+  const ownerWindow = popover.ownerDocument.defaultView || window;
+  const margin = 12;
+  const currentShift = Number.parseFloat(
+    ownerWindow.getComputedStyle(popover).getPropertyValue("--slate-popover-shift-x") || "0"
+  ) || 0;
+  const rect = popover.getBoundingClientRect();
+  let nextShift = currentShift;
+
+  if (rect.right > ownerWindow.innerWidth - margin) {
+    nextShift -= rect.right - (ownerWindow.innerWidth - margin);
+  }
+
+  const adjustedLeft = rect.left + (nextShift - currentShift);
+  if (adjustedLeft < margin) {
+    nextShift += margin - adjustedLeft;
+  }
+
+  if (nextShift !== currentShift) {
+    popover.setCssProps({ "--slate-popover-shift-x": `${Math.round(nextShift)}px` });
+  }
+}
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(file.name);
+}
