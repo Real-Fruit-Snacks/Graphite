@@ -2643,8 +2643,8 @@ button.slate-add-inline {
 
 .slate-button-primary,
 .slate-ui-button-primary {
-  background: var(--slate-accent);
-  color: var(--slate-on-accent);
+  background: var(--slate-success);
+  color: var(--slate-on-success);
 }
 
 .slate-root button.slate-button.slate-button-primary,
@@ -2655,22 +2655,22 @@ button.slate-add-inline {
 .slate-root button.slate-ui-button.slate-ui-button-primary:hover,
 .slate-root button.slate-ui-button.slate-ui-button-primary:focus-visible,
 .slate-root button.slate-ui-button.slate-ui-button-primary:active {
-  background: var(--slate-accent);
+  background: var(--slate-success);
   border-color: transparent;
-  color: var(--slate-on-accent);
+  color: var(--slate-on-success);
 }
 
 .slate-root button.slate-button.slate-button-primary:hover,
 .slate-root button.slate-button.slate-button-primary:focus-visible,
 .slate-root button.slate-ui-button.slate-ui-button-primary:hover,
 .slate-root button.slate-ui-button.slate-ui-button-primary:focus-visible {
-  background: var(--slate-accent-hover);
+  background: var(--slate-success-hover);
 }
 
 .slate-root button.slate-button.slate-button-primary:disabled,
 .slate-root button.slate-ui-button.slate-ui-button-primary:disabled {
-  background: var(--slate-accent);
-  color: var(--slate-on-accent);
+  background: var(--slate-success);
+  color: var(--slate-on-success);
   opacity: 0.72;
 }
 
@@ -2684,6 +2684,24 @@ button.slate-add-inline {
 .slate-button-danger:hover,
 .slate-ui-button-danger:hover {
   background: var(--slate-danger);
+  color: #fff;
+}
+
+/* Destructive (solid red) — used for Delete actions. */
+.slate-button-destructive,
+.slate-ui-button-destructive,
+.slate-root button.slate-button.slate-button-destructive,
+.slate-root button.slate-ui-button.slate-ui-button-destructive {
+  background: var(--slate-danger);
+  border-color: transparent;
+  color: #fff;
+}
+
+.slate-root button.slate-button.slate-button-destructive:hover,
+.slate-root button.slate-button.slate-button-destructive:focus-visible,
+.slate-root button.slate-ui-button.slate-ui-button-destructive:hover,
+.slate-root button.slate-ui-button.slate-ui-button-destructive:focus-visible {
+  background: var(--slate-danger-hover);
   color: #fff;
 }
 

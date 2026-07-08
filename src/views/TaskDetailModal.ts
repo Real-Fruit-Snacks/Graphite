@@ -347,12 +347,10 @@ export class TaskDetailModal extends Modal {
     this.renderSidePanel(side);
 
     const footer = contentEl.createDiv({ cls: "slate-detail-footer" });
-    footer
-      .createEl("button", {
-        cls: "slate-detail-delete",
-        text: "Delete task",
-        attr: { type: "button" }
-      })
+    createSlateButton(footer, {
+      text: "Delete task",
+      variant: "destructive"
+    })
       .addEventListener("click", () => {
         void (async () => {
           await this.options.store.deleteTask(this.draft.id);
@@ -1109,16 +1107,8 @@ export class TaskDetailModal extends Modal {
 
       // ── Action buttons ─────────────────────────────────────────
       const btnRow = addRow.createDiv({ cls: "slate-subtask-btn-row" });
-      const addBtn = btnRow.createEl("button", {
-        cls: "slate-button slate-button-primary",
-        text: "Add task",
-        attr: { type: "button" }
-      });
-      const cancelBtn = btnRow.createEl("button", {
-        cls: "slate-button",
-        text: "Cancel",
-        attr: { type: "button" }
-      });
+      const addBtn = createSlateButton(btnRow, { text: "Add task", variant: "primary" });
+      const cancelBtn = createSlateButton(btnRow, { text: "Cancel" });
 
       const submit = () => {
         const title = input.value.trim();
@@ -1187,9 +1177,7 @@ export class TaskDetailModal extends Modal {
     const projectDot = projectPicker.createSpan({
       cls: "slate-project-dot slate-detail-project-dot"
     });
-    const select = projectPicker.createEl("select", {
-      cls: "slate-detail-input slate-detail-select"
-    });
+    const projectLabel = projectPicker.createSpan({ cls: "slate-detail-project-label" });
     const createRow = field.createDiv({ cls: "slate-detail-project-create is-hidden" });
     const createInput = createRow.createEl("input", {
       cls: "slate-detail-project-create-input",
@@ -1218,19 +1206,9 @@ export class TaskDetailModal extends Modal {
         this.draft.project
       ]);
 
-    const renderOptions = () => {
-      select.empty();
-      select.createEl("option", { text: "No project", value: "" });
-      for (const project of getProjects()) {
-        select.createEl("option", { text: project, value: project });
-      }
-
-      select.createEl("option", { text: "Create project...", value: createValue });
-      select.value = normalizeTaskProject(this.draft.project) || "";
-    };
-
     const updateProjectStyle = () => {
       const project = normalizeTaskProject(this.draft.project);
+      projectLabel.setText(project || "No project");
       if (!project) {
         projectDot.setCssStyles({ backgroundColor: "var(--slate-faint)" });
         projectPicker.setCssStyles({
@@ -1293,22 +1271,10 @@ export class TaskDetailModal extends Modal {
 
       this.draft.project = project;
       hideCreateRow();
-      renderOptions();
+      dropdown.refresh();
       updateProjectStyle();
     };
 
-    select.addEventListener("change", () => {
-      if (select.value === createValue) {
-        createRow.removeClass("is-hidden");
-        select.value = normalizeTaskProject(this.draft.project) || "";
-        createInput.focus();
-        return;
-      }
-
-      this.draft.project = normalizeTaskProject(select.value);
-      createRow.addClass("is-hidden");
-      updateProjectStyle();
-    });
     createButton.addEventListener("click", createProject);
     cancelCreateButton.addEventListener("click", hideCreateRow);
     createInput.addEventListener("keydown", (event) => {
@@ -1323,7 +1289,6 @@ export class TaskDetailModal extends Modal {
       }
     });
 
-    renderOptions();
     updateProjectStyle();
   }
 
@@ -1572,14 +1537,7 @@ export class TaskDetailModal extends Modal {
     const priorityWrap = field.createDiv({ cls: "slate-priority-select-wrap slate-detail-priority-wrap" });
     const indicator = priorityWrap.createSpan({ cls: "slate-priority-indicator" });
     const display = priorityWrap.createSpan({ cls: "slate-priority-display" });
-    const select = priorityWrap.createEl("select", {
-      cls: "slate-detail-input slate-priority-select",
-      attr: { "aria-label": "Priority" }
-    });
-    for (const priority of PRIORITIES.filter((priority) => priority !== "none")) {
-      select.createEl("option", { text: getPriorityDropdownLabel(priority), value: priority });
-    }
-    select.value = isDefaultPriority(this.draft.priority) ? "P4" : this.draft.priority;
+    const priorities = PRIORITIES.filter((priority) => priority !== "none");
     const updatePriorityStyle = () => {
       const color = getPriorityColor(this.draft.priority);
       priorityWrap.setCssProps({
