@@ -124,14 +124,7 @@ export class TaskStore {
       nextDocuments.set(file.path, document);
 
       for (const task of document.tasks) {
-        nextTasks.push({
-          ...task,
-          created: task.created || todayIso(),
-          attachments: [...task.attachments],
-          labels: dedupeLabels(task.labels),
-          sourcePath: file.path,
-          order
-        });
+        nextTasks.push({ ...withLoadedDefaults(task, file.path), order });
         order += 1;
       }
     }
@@ -474,64 +467,75 @@ export class TaskStore {
       return 0;
     }
 
-    const existingDataIds = new Set(
-      this.tasks
-        .filter((task) => task.sourcePath !== legacyFile.path)
-        .map((task) => task.id)
-    );
-    const changedSources = new Set<string>();
     let migratedCount = 0;
+    // Serialize the whole migration (in-memory pushes + write + reload) with the
+    // autosave queue so a concurrent task write cannot interleave with it.
+    await this.enqueueWrite(async () => {
+      const existingDataIds = new Set(
+        this.tasks
+          .filter((task) => task.sourcePath !== legacyFile.path)
+          .map((task) => task.id)
+      );
+      const changedSources = new Set<string>();
 
-    for (const task of legacyDocument.tasks) {
-      if (existingDataIds.has(task.id)) {
-        continue;
+      for (const task of legacyDocument.tasks) {
+        if (existingDataIds.has(task.id)) {
+          continue;
+        }
+
+        const created = task.created || todayIso();
+        const sourcePath = this.monthlyPathForDate(created);
+        const sourceReady = await this.ensureSourceDocument(sourcePath);
+        if (!sourceReady) {
+          continue;
+        }
+        this.tasks.push({
+          ...task,
+          created,
+          labels: dedupeLabels(task.labels),
+          attachments: normalizeAttachments(task.attachments),
+          sourcePath,
+          order: this.nextOrder()
+        });
+        changedSources.add(sourcePath);
+        migratedCount += 1;
       }
 
-      const created = task.created || todayIso();
-      const sourcePath = this.monthlyPathForDate(created);
-      const sourceReady = await this.ensureSourceDocument(sourcePath);
-      if (!sourceReady) {
-        continue;
-      }
-      this.tasks.push({
-        ...task,
-        created,
-        labels: dedupeLabels(task.labels),
-        attachments: normalizeAttachments(task.attachments),
-        sourcePath,
-        order: this.nextOrder()
-      });
-      changedSources.add(sourcePath);
-      migratedCount += 1;
-    }
-
-    await this.writeSources([...changedSources]);
-    const backupPath = await this.nextBackupPath(legacyFile.path);
-    await this.app.vault.rename(legacyFile, backupPath);
-    await this.load();
+      await this.writeSources([...changedSources]);
+      const backupPath = await this.nextBackupPath(legacyFile.path);
+      await this.app.vault.rename(legacyFile, backupPath);
+      await this.load();
+    });
 
     return migratedCount;
   }
 
   async resetAndSeedDemoData(): Promise<number> {
-    await this.ensureTaskStructure();
-    await this.clearDemoWritableData();
-    await this.ensureFolder(this.dataDir);
-    await this.ensureFolder(this.attachmentsDir);
-    await this.replaceFile(this.mainFilePath, DEMO_MAIN_CONTENT);
+    let seededCount = 0;
+    // Serialize the destructive reset + reseed + reload with the autosave queue
+    // so a concurrent task write cannot interleave with it.
+    await this.enqueueWrite(async () => {
+      await this.ensureTaskStructure();
+      await this.clearDemoWritableData();
+      await this.ensureFolder(this.dataDir);
+      await this.ensureFolder(this.attachmentsDir);
+      await this.replaceFile(this.mainFilePath, DEMO_MAIN_CONTENT);
 
-    const sourcePath = this.monthlyPathForDate(todayIso());
-    const seedData = buildDemoSeedData(sourcePath, this.attachmentsDir);
+      const sourcePath = this.monthlyPathForDate(todayIso());
+      const seedData = buildDemoSeedData(sourcePath, this.attachmentsDir);
 
-    for (const attachment of seedData.attachments) {
-      await this.replaceFile(attachment.path, attachment.content);
-    }
+      for (const attachment of seedData.attachments) {
+        await this.replaceFile(attachment.path, attachment.content);
+      }
 
-    const content = serializeTaskDocument({ blocks: [], tasks: [] }, seedData.tasks);
-    await this.replaceFile(sourcePath, content);
-    await this.load();
+      const content = serializeTaskDocument({ blocks: [], tasks: [] }, seedData.tasks);
+      await this.replaceFile(sourcePath, content);
+      await this.load();
 
-    return seedData.tasks.length;
+      seededCount = seedData.tasks.length;
+    });
+
+    return seededCount;
   }
 
   private async saveSources(sourcePaths: string[]): Promise<void> {
@@ -585,13 +589,7 @@ export class TaskStore {
       }
       tasksBySource.set(
         path,
-        document.tasks.map((task) => ({
-          ...task,
-          created: task.created || todayIso(),
-          attachments: [...task.attachments],
-          labels: dedupeLabels(task.labels),
-          sourcePath: path
-        }))
+        document.tasks.map((task) => withLoadedDefaults(task, path))
       );
     }
 
@@ -938,6 +936,20 @@ export class TaskStore {
     const month = /^\d{4}-\d{2}/.test(value) ? value.slice(0, 7) : todayIso().slice(0, 7);
     return normalizePath(`${this.dataDir}/${month}.md`);
   }
+}
+
+// Applies the defaults every task gets when loaded into memory from a parsed
+// document. Shared by load() (from-disk) and reconcileSources (from the freshly
+// re-parsed written document) so the two paths can never drift. Callers assign
+// `order` separately.
+function withLoadedDefaults(task: SlateTask, sourcePath: string): SlateTask {
+  return {
+    ...task,
+    created: task.created || todayIso(),
+    attachments: [...task.attachments],
+    labels: dedupeLabels(task.labels),
+    sourcePath
+  };
 }
 
 function normalizeTaskForSave(task: SlateTask, sourcePath: string): SlateTask {

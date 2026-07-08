@@ -2008,14 +2008,7 @@ var TaskStore = class {
       const document2 = parseTaskDocument(content, file.path);
       nextDocuments.set(file.path, document2);
       for (const task of document2.tasks) {
-        nextTasks.push({
-          ...task,
-          created: task.created || todayIso(),
-          attachments: [...task.attachments],
-          labels: dedupeLabels(task.labels),
-          sourcePath: file.path,
-          order
-        });
+        nextTasks.push({ ...withLoadedDefaults(task, file.path), order });
         order += 1;
       }
     }
@@ -2285,53 +2278,59 @@ var TaskStore = class {
     if (legacyDocument.tasks.length === 0) {
       return 0;
     }
-    const existingDataIds = new Set(
-      this.tasks.filter((task) => task.sourcePath !== legacyFile.path).map((task) => task.id)
-    );
-    const changedSources = /* @__PURE__ */ new Set();
     let migratedCount = 0;
-    for (const task of legacyDocument.tasks) {
-      if (existingDataIds.has(task.id)) {
-        continue;
+    await this.enqueueWrite(async () => {
+      const existingDataIds = new Set(
+        this.tasks.filter((task) => task.sourcePath !== legacyFile.path).map((task) => task.id)
+      );
+      const changedSources = /* @__PURE__ */ new Set();
+      for (const task of legacyDocument.tasks) {
+        if (existingDataIds.has(task.id)) {
+          continue;
+        }
+        const created = task.created || todayIso();
+        const sourcePath = this.monthlyPathForDate(created);
+        const sourceReady = await this.ensureSourceDocument(sourcePath);
+        if (!sourceReady) {
+          continue;
+        }
+        this.tasks.push({
+          ...task,
+          created,
+          labels: dedupeLabels(task.labels),
+          attachments: normalizeAttachments(task.attachments),
+          sourcePath,
+          order: this.nextOrder()
+        });
+        changedSources.add(sourcePath);
+        migratedCount += 1;
       }
-      const created = task.created || todayIso();
-      const sourcePath = this.monthlyPathForDate(created);
-      const sourceReady = await this.ensureSourceDocument(sourcePath);
-      if (!sourceReady) {
-        continue;
-      }
-      this.tasks.push({
-        ...task,
-        created,
-        labels: dedupeLabels(task.labels),
-        attachments: normalizeAttachments(task.attachments),
-        sourcePath,
-        order: this.nextOrder()
-      });
-      changedSources.add(sourcePath);
-      migratedCount += 1;
-    }
-    await this.writeSources([...changedSources]);
-    const backupPath = await this.nextBackupPath(legacyFile.path);
-    await this.app.vault.rename(legacyFile, backupPath);
-    await this.load();
+      await this.writeSources([...changedSources]);
+      const backupPath = await this.nextBackupPath(legacyFile.path);
+      await this.app.vault.rename(legacyFile, backupPath);
+      await this.load();
+    });
     return migratedCount;
   }
   async resetAndSeedDemoData() {
-    await this.ensureTaskStructure();
-    await this.clearDemoWritableData();
-    await this.ensureFolder(this.dataDir);
-    await this.ensureFolder(this.attachmentsDir);
-    await this.replaceFile(this.mainFilePath, DEMO_MAIN_CONTENT);
-    const sourcePath = this.monthlyPathForDate(todayIso());
-    const seedData = buildDemoSeedData(sourcePath, this.attachmentsDir);
-    for (const attachment of seedData.attachments) {
-      await this.replaceFile(attachment.path, attachment.content);
-    }
-    const content = serializeTaskDocument({ blocks: [], tasks: [] }, seedData.tasks);
-    await this.replaceFile(sourcePath, content);
-    await this.load();
-    return seedData.tasks.length;
+    let seededCount = 0;
+    await this.enqueueWrite(async () => {
+      await this.ensureTaskStructure();
+      await this.clearDemoWritableData();
+      await this.ensureFolder(this.dataDir);
+      await this.ensureFolder(this.attachmentsDir);
+      await this.replaceFile(this.mainFilePath, DEMO_MAIN_CONTENT);
+      const sourcePath = this.monthlyPathForDate(todayIso());
+      const seedData = buildDemoSeedData(sourcePath, this.attachmentsDir);
+      for (const attachment of seedData.attachments) {
+        await this.replaceFile(attachment.path, attachment.content);
+      }
+      const content = serializeTaskDocument({ blocks: [], tasks: [] }, seedData.tasks);
+      await this.replaceFile(sourcePath, content);
+      await this.load();
+      seededCount = seedData.tasks.length;
+    });
+    return seededCount;
   }
   async saveSources(sourcePaths) {
     await this.enqueueWrite(async () => {
@@ -2368,13 +2367,7 @@ var TaskStore = class {
       }
       tasksBySource.set(
         path,
-        document2.tasks.map((task) => ({
-          ...task,
-          created: task.created || todayIso(),
-          attachments: [...task.attachments],
-          labels: dedupeLabels(task.labels),
-          sourcePath: path
-        }))
+        document2.tasks.map((task) => withLoadedDefaults(task, path))
       );
     }
     const nextTasks = [];
@@ -2652,6 +2645,15 @@ var TaskStore = class {
     return (0, import_obsidian6.normalizePath)(`${this.dataDir}/${month}.md`);
   }
 };
+function withLoadedDefaults(task, sourcePath) {
+  return {
+    ...task,
+    created: task.created || todayIso(),
+    attachments: [...task.attachments],
+    labels: dedupeLabels(task.labels),
+    sourcePath
+  };
+}
 function normalizeTaskForSave(task, sourcePath) {
   return {
     ...task,
