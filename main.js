@@ -893,11 +893,17 @@ var DataFolderVisibility = class {
       return;
     }
     const esc = cssAttrEscape(folderPath);
-    this.ensureStyleEl().textContent = [
-      `.nav-folder:has(> .nav-folder-title[data-path="${esc}"]) { display: none !important; }`,
+    const supportsHas = typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("selector(:has(*))");
+    const rules = [
       `.nav-folder-title[data-path="${esc}"] { display: none !important; }`,
       `.nav-file-title[data-path^="${esc}/"] { display: none !important; }`
-    ].join("\n");
+    ];
+    if (supportsHas) {
+      rules.unshift(
+        `.nav-folder:has(> .nav-folder-title[data-path="${esc}"]) { display: none !important; }`
+      );
+    }
+    this.ensureStyleEl().textContent = rules.join("\n");
   }
   ensureStyleEl() {
     if (this.styleEl && this.styleEl.isConnected) {
@@ -933,6 +939,12 @@ var DataFolderVisibility = class {
       }
       if (!arraysEqual(original, next)) {
         vault.setConfig(IGNORE_FILTERS_KEY, next);
+        const applied = vault.getConfig(IGNORE_FILTERS_KEY);
+        const appliedList = Array.isArray(applied) ? applied : [];
+        const wantsEntry = hidden && Boolean(folderPath);
+        if (wantsEntry && !appliedList.includes(folderPath)) {
+          this.warnFilterFallback(folderPath, hidden);
+        }
       }
     } catch (error) {
       console.warn("[slate] Could not update Obsidian excluded files list.", error);
