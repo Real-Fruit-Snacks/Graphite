@@ -215,7 +215,9 @@ npm run build
 During development:
 
 ```bash
-npm run dev
+npm run dev      # watch build
+npm run test     # run the data-layer test suite (Vitest)
+npm run verify   # tests + typecheck + production build (pre-commit gate)
 ```
 
 Build output is written to:
