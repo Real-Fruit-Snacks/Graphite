@@ -2700,6 +2700,52 @@ button.slate-add-inline {
   color: #fff;
 }
 
+/* Plugin buttons inside Obsidian modals sit outside .slate-root, so the
+   .slate-root-scoped variant rules above don't reach them and Obsidian's own
+   `.modal button` styling would win. Re-assert the variant colors here at a
+   specificity that beats it, so e.g. a delete confirmation's button reads red. */
+.modal .slate-button-primary,
+.modal .slate-ui-button-primary {
+  background: var(--slate-success);
+  border-color: transparent;
+  color: var(--slate-on-success);
+}
+
+.modal .slate-button-primary:hover,
+.modal .slate-ui-button-primary:hover,
+.modal .slate-button-primary:focus-visible,
+.modal .slate-ui-button-primary:focus-visible {
+  background: var(--slate-success-hover);
+}
+
+.modal .slate-button-destructive,
+.modal .slate-ui-button-destructive {
+  background: var(--slate-danger);
+  border-color: transparent;
+  color: #fff;
+}
+
+.modal .slate-button-destructive:hover,
+.modal .slate-ui-button-destructive:hover,
+.modal .slate-button-destructive:focus-visible,
+.modal .slate-ui-button-destructive:focus-visible {
+  background: var(--slate-danger-hover);
+  color: #fff;
+}
+
+.modal .slate-button-danger,
+.modal .slate-ui-button-danger {
+  background: transparent;
+  color: var(--slate-danger);
+  border-color: var(--slate-danger);
+}
+
+.modal .slate-button-danger:hover,
+.modal .slate-ui-button-danger:hover {
+  background: var(--slate-danger);
+  color: #fff;
+}
+
 /* SlateUI primitives */
 .slate-ui-button {
   align-items: center;
