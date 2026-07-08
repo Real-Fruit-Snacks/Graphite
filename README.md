@@ -249,6 +249,10 @@ Slate does not add telemetry, does not call external APIs, and does not require 
 
 ---
 
+## Credits
+
+Slate is a fork of the [belki](https://github.com/aribuga/obsidian-belki-tasks) task manager by Yasin Aribuga, rebuilt and extended under the [Terminal Workbench](https://github.com/Real-Fruit-Snacks/terminal-workbench-design-system) design language.
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Copyright © Yasin Aribuga (original belki project) and Real-Fruit-Snacks (Slate fork).
