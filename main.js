@@ -2314,7 +2314,31 @@ var TaskStore = class {
   }
   async saveSources(sourcePaths) {
     await this.writeSources(sourcePaths);
-    await this.load();
+    this.rebuildTasksFromDocuments();
+  }
+  rebuildTasksFromDocuments() {
+    const nextTasks = [];
+    let order = 0;
+    const paths = [...this.documents.keys()].sort((a, b) => a.localeCompare(b));
+    for (const path of paths) {
+      const document2 = this.documents.get(path);
+      if (!document2) {
+        continue;
+      }
+      for (const task of document2.tasks) {
+        nextTasks.push({
+          ...task,
+          created: task.created || todayIso(),
+          attachments: [...task.attachments],
+          labels: dedupeLabels(task.labels),
+          sourcePath: path,
+          order
+        });
+        order += 1;
+      }
+    }
+    this.tasks = nextTasks;
+    this.notify();
   }
   async writeSources(sourcePaths) {
     for (const sourcePath of dedupeStrings(sourcePaths.filter(Boolean))) {

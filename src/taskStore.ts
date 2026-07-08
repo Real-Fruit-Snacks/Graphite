@@ -535,7 +535,35 @@ export class TaskStore {
 
   private async saveSources(sourcePaths: string[]): Promise<void> {
     await this.writeSources(sourcePaths);
-    await this.load();
+    this.rebuildTasksFromDocuments();
+  }
+
+  private rebuildTasksFromDocuments(): void {
+    const nextTasks: SlateTask[] = [];
+    let order = 0;
+
+    const paths = [...this.documents.keys()].sort((a, b) => a.localeCompare(b));
+    for (const path of paths) {
+      const document = this.documents.get(path);
+      if (!document) {
+        continue;
+      }
+
+      for (const task of document.tasks) {
+        nextTasks.push({
+          ...task,
+          created: task.created || todayIso(),
+          attachments: [...task.attachments],
+          labels: dedupeLabels(task.labels),
+          sourcePath: path,
+          order
+        });
+        order += 1;
+      }
+    }
+
+    this.tasks = nextTasks;
+    this.notify();
   }
 
   private async writeSources(sourcePaths: string[]): Promise<void> {
