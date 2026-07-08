@@ -536,8 +536,15 @@ export class TaskStore {
 
   private async saveSources(sourcePaths: string[]): Promise<void> {
     await this.enqueueWrite(async () => {
-      const writtenPaths = await this.writeSources(sourcePaths);
-      this.reconcileSources(writtenPaths);
+      const writtenPaths: string[] = [];
+      try {
+        await this.writeSources(sourcePaths, writtenPaths);
+      } finally {
+        // Reconcile whatever actually made it to disk, even if a later source's
+        // write threw — otherwise the successfully-written sources' in-memory
+        // order/notify would not update until the next edit.
+        this.reconcileSources(writtenPaths);
+      }
     });
   }
 
@@ -571,6 +578,9 @@ export class TaskStore {
     for (const path of writtenSet) {
       const document = this.documents.get(path);
       if (!document) {
+        // Invariant: writeSources always sets this.documents[path] before adding
+        // path to writtenPaths. If this ever fires, that invariant broke.
+        console.warn("[slate] No parsed document for a just-written source; skipping.", { path });
         continue;
       }
       tasksBySource.set(
@@ -598,8 +608,7 @@ export class TaskStore {
     this.notify();
   }
 
-  private async writeSources(sourcePaths: string[]): Promise<string[]> {
-    const writtenPaths: string[] = [];
+  private async writeSources(sourcePaths: string[], writtenPaths: string[] = []): Promise<string[]> {
     for (const sourcePath of dedupeStrings(sourcePaths.filter(Boolean))) {
       await this.ensureSourceDocument(sourcePath);
       const document = this.documents.get(sourcePath) || { blocks: [], tasks: [] };

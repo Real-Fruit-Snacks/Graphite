@@ -2335,8 +2335,12 @@ var TaskStore = class {
   }
   async saveSources(sourcePaths) {
     await this.enqueueWrite(async () => {
-      const writtenPaths = await this.writeSources(sourcePaths);
-      this.reconcileSources(writtenPaths);
+      const writtenPaths = [];
+      try {
+        await this.writeSources(sourcePaths, writtenPaths);
+      } finally {
+        this.reconcileSources(writtenPaths);
+      }
     });
   }
   enqueueWrite(operation) {
@@ -2359,6 +2363,7 @@ var TaskStore = class {
     for (const path of writtenSet) {
       const document2 = this.documents.get(path);
       if (!document2) {
+        console.warn("[slate] No parsed document for a just-written source; skipping.", { path });
         continue;
       }
       tasksBySource.set(
@@ -2383,8 +2388,7 @@ var TaskStore = class {
     this.tasks = nextTasks;
     this.notify();
   }
-  async writeSources(sourcePaths) {
-    const writtenPaths = [];
+  async writeSources(sourcePaths, writtenPaths = []) {
     for (const sourcePath of dedupeStrings(sourcePaths.filter(Boolean))) {
       await this.ensureSourceDocument(sourcePath);
       const document2 = this.documents.get(sourcePath) || { blocks: [], tasks: [] };
