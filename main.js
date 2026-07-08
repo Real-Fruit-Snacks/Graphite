@@ -2315,8 +2315,8 @@ var TaskStore = class {
   }
   async saveSources(sourcePaths) {
     await this.enqueueWrite(async () => {
-      await this.writeSources(sourcePaths);
-      this.rebuildTasksFromDocuments();
+      const writtenPaths = await this.writeSources(sourcePaths);
+      this.reconcileSources(writtenPaths);
     });
   }
   enqueueWrite(operation) {
@@ -2324,24 +2324,39 @@ var TaskStore = class {
     this.writeChain = run.catch(() => void 0);
     return run;
   }
-  rebuildTasksFromDocuments() {
-    const nextTasks = [];
-    let order = 0;
-    const paths = [...this.documents.keys()].sort((a, b) => a.localeCompare(b));
-    for (const path of paths) {
+  reconcileSources(writtenPaths) {
+    const writtenSet = new Set(writtenPaths);
+    const tasksBySource = /* @__PURE__ */ new Map();
+    for (const task of this.tasks) {
+      const path = task.sourcePath || this.monthlyPathForDate(task.created || todayIso());
+      if (writtenSet.has(path)) {
+        continue;
+      }
+      const list = tasksBySource.get(path) || [];
+      list.push(task);
+      tasksBySource.set(path, list);
+    }
+    for (const path of writtenSet) {
       const document2 = this.documents.get(path);
       if (!document2) {
         continue;
       }
-      for (const task of document2.tasks) {
-        nextTasks.push({
+      tasksBySource.set(
+        path,
+        document2.tasks.map((task) => ({
           ...task,
           created: task.created || todayIso(),
           attachments: [...task.attachments],
           labels: dedupeLabels(task.labels),
-          sourcePath: path,
-          order
-        });
+          sourcePath: path
+        }))
+      );
+    }
+    const nextTasks = [];
+    let order = 0;
+    for (const path of [...tasksBySource.keys()].sort((a, b) => a.localeCompare(b))) {
+      for (const task of tasksBySource.get(path) || []) {
+        nextTasks.push({ ...task, order });
         order += 1;
       }
     }
@@ -2349,6 +2364,7 @@ var TaskStore = class {
     this.notify();
   }
   async writeSources(sourcePaths) {
+    const writtenPaths = [];
     for (const sourcePath of dedupeStrings(sourcePaths.filter(Boolean))) {
       await this.ensureSourceDocument(sourcePath);
       const document2 = this.documents.get(sourcePath) || { blocks: [], tasks: [] };
@@ -2365,7 +2381,9 @@ var TaskStore = class {
         this.writingPaths.delete((0, import_obsidian6.normalizePath)(sourcePath));
       }
       this.documents.set(sourcePath, parseTaskDocument(content, sourcePath));
+      writtenPaths.push(sourcePath);
     }
+    return writtenPaths;
   }
   reorderDocumentBlocksForSource(sourcePath) {
     const document2 = this.documents.get(sourcePath);

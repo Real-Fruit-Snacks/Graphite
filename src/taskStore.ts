@@ -536,8 +536,8 @@ export class TaskStore {
 
   private async saveSources(sourcePaths: string[]): Promise<void> {
     await this.enqueueWrite(async () => {
-      await this.writeSources(sourcePaths);
-      this.rebuildTasksFromDocuments();
+      const writtenPaths = await this.writeSources(sourcePaths);
+      this.reconcileSources(writtenPaths);
     });
   }
 
@@ -549,26 +549,47 @@ export class TaskStore {
     return run;
   }
 
-  private rebuildTasksFromDocuments(): void {
-    const nextTasks: SlateTask[] = [];
-    let order = 0;
+  private reconcileSources(writtenPaths: string[]): void {
+    const writtenSet = new Set(writtenPaths);
 
-    const paths = [...this.documents.keys()].sort((a, b) => a.localeCompare(b));
-    for (const path of paths) {
+    // Group current in-memory tasks by source. Sources we did NOT just write keep
+    // their in-memory tasks, which may hold edits still queued behind this write —
+    // rebuilding those from this.documents would revert them.
+    const tasksBySource = new Map<string, SlateTask[]>();
+    for (const task of this.tasks) {
+      const path = task.sourcePath || this.monthlyPathForDate(task.created || todayIso());
+      if (writtenSet.has(path)) {
+        continue; // replaced from the freshly re-parsed document below
+      }
+      const list = tasksBySource.get(path) || [];
+      list.push(task);
+      tasksBySource.set(path, list);
+    }
+
+    // For each just-written source, take the freshly re-parsed document tasks so the
+    // in-memory state matches exactly what landed on disk.
+    for (const path of writtenSet) {
       const document = this.documents.get(path);
       if (!document) {
         continue;
       }
-
-      for (const task of document.tasks) {
-        nextTasks.push({
+      tasksBySource.set(
+        path,
+        document.tasks.map((task) => ({
           ...task,
           created: task.created || todayIso(),
           attachments: [...task.attachments],
           labels: dedupeLabels(task.labels),
-          sourcePath: path,
-          order
-        });
+          sourcePath: path
+        }))
+      );
+    }
+
+    const nextTasks: SlateTask[] = [];
+    let order = 0;
+    for (const path of [...tasksBySource.keys()].sort((a, b) => a.localeCompare(b))) {
+      for (const task of tasksBySource.get(path) || []) {
+        nextTasks.push({ ...task, order });
         order += 1;
       }
     }
@@ -577,7 +598,8 @@ export class TaskStore {
     this.notify();
   }
 
-  private async writeSources(sourcePaths: string[]): Promise<void> {
+  private async writeSources(sourcePaths: string[]): Promise<string[]> {
+    const writtenPaths: string[] = [];
     for (const sourcePath of dedupeStrings(sourcePaths.filter(Boolean))) {
       await this.ensureSourceDocument(sourcePath);
       const document = this.documents.get(sourcePath) || { blocks: [], tasks: [] };
@@ -596,7 +618,9 @@ export class TaskStore {
         this.writingPaths.delete(normalizePath(sourcePath));
       }
       this.documents.set(sourcePath, parseTaskDocument(content, sourcePath));
+      writtenPaths.push(sourcePath);
     }
+    return writtenPaths;
   }
 
   private reorderDocumentBlocksForSource(sourcePath: string): void {
