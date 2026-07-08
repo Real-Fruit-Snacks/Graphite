@@ -4,7 +4,7 @@ All notable changes to Slate are documented here.
 
 ---
 
-## 0.4.0
+## 0.1.0
 
 Initial Slate release.
 
