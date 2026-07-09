@@ -1,78 +1,27 @@
 import { App, Notice } from "obsidian";
 
-const STYLE_EL_ID = "graphite-data-folder-visibility";
 const IGNORE_FILTERS_KEY = "userIgnoreFilters";
 
 /**
- * Keeps the Graphite data folder hidden from Obsidian's UI without touching stored
- * data. Two independent mechanisms:
- *
- * 1. A managed <style> element hides the folder's row (and its contents) in the
- *    file explorer, matched by the folder's `data-path`.
- * 2. The folder is added to Obsidian's "Excluded files" list so it also stays
- *    out of search, graph, and the quick switcher. This relies on the
- *    semi-internal vault config API; when unavailable it degrades to a one-time
- *    notice telling the user how to add the exclusion manually.
- *
- * All effects are reversible: turning the toggle off (or disabling the plugin)
- * removes the CSS, and the excluded-files entry is removed when hiding is off.
+ * Keeps the Graphite data folder out of the way by adding it to Obsidian's
+ * "Excluded files" list. That excludes it from search, graph, backlinks, and the
+ * quick switcher, and dims it in the file explorer — without touching the data on
+ * disk. This relies on the semi-internal vault config API; when unavailable it
+ * degrades to a one-time notice telling the user how to add the exclusion manually.
  */
 export class DataFolderVisibility {
-  private styleEl: HTMLStyleElement | null = null;
   private lastFilterPath: string | null = null;
   private warnedFilterFailure = false;
 
   constructor(private app: App) {}
 
-  /** Reconcile both mechanisms to the given folder path and hidden state. */
+  /** Reconcile the excluded-files entry to the given folder path and hidden state. */
   apply(folderPath: string, hidden: boolean): void {
-    this.applyExplorerHiding(folderPath, hidden);
     this.applyExcludedFilter(folderPath, hidden);
   }
 
-  /** Remove the injected CSS. Excluded-files entries are left as-is. */
-  destroy(): void {
-    this.styleEl?.remove();
-    this.styleEl = null;
-  }
-
-  private applyExplorerHiding(folderPath: string, hidden: boolean): void {
-    if (!hidden || !folderPath) {
-      if (this.styleEl) {
-        this.styleEl.textContent = "";
-      }
-      return;
-    }
-
-    const esc = cssAttrEscape(folderPath);
-    const supportsHas =
-      typeof CSS !== "undefined" &&
-      typeof CSS.supports === "function" &&
-      CSS.supports("selector(:has(*))");
-
-    const rules = [
-      `.nav-folder-title[data-path="${esc}"] { display: none !important; }`,
-      `.nav-file-title[data-path^="${esc}/"] { display: none !important; }`
-    ];
-    if (supportsHas) {
-      rules.unshift(
-        `.nav-folder:has(> .nav-folder-title[data-path="${esc}"]) { display: none !important; }`
-      );
-    }
-    this.ensureStyleEl().textContent = rules.join("\n");
-  }
-
-  private ensureStyleEl(): HTMLStyleElement {
-    if (this.styleEl && this.styleEl.isConnected) {
-      return this.styleEl;
-    }
-
-    const el = document.createElement("style");
-    el.id = STYLE_EL_ID;
-    document.head.appendChild(el);
-    this.styleEl = el;
-    return el;
-  }
+  /** No transient UI state to tear down; excluded-files entries are left as-is. */
+  destroy(): void {}
 
   private applyExcludedFilter(folderPath: string, hidden: boolean): void {
     const vault = this.app.vault as unknown as {
@@ -128,15 +77,12 @@ export class DataFolderVisibility {
 
     this.warnedFilterFailure = true;
     new Notice(
-      `Graphite hid "${folderPath}" from the file explorer. To also hide it from ` +
-        `search and graph, add it to Settings → Files and links → Excluded files.`,
+      `Graphite could not add "${folderPath}" to Obsidian's excluded files. To keep it ` +
+        `out of search and dimmed in the file explorer, add it in ` +
+        `Settings → Files and links → Excluded files.`,
       10000
     );
   }
-}
-
-function cssAttrEscape(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function arraysEqual(a: string[], b: string[]): boolean {

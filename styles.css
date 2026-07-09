@@ -157,7 +157,7 @@ body {
   color: var(--graphite-text);
   display: grid;
   font-size: 14px;
-  column-gap: 10px;
+  gap: 10px;
   grid-template-columns: 26px minmax(0, 1fr) auto;
   min-height: 34px;
   padding: 6px 8px;
@@ -602,10 +602,10 @@ button.graphite-project-button.is-active {
 .graphite-root button.graphite-task-subtask-counter:hover,
 .graphite-root button.graphite-task-subtask-counter:active,
 .graphite-root button.graphite-task-subtask-counter:focus-visible {
-  background: transparent !important;
-  background-color: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
+  background: transparent;
+  background-color: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .graphite-task-drag-handle {

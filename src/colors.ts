@@ -35,15 +35,14 @@ export function resolveColorToHex(value: string, cache?: Map<string, string>): s
   if (cached !== undefined) {
     return cached;
   }
-  if (typeof document === "undefined") {
+  if (typeof activeDocument === "undefined") {
     return "#888888";
   }
 
-  const probe = document.createElement("span");
-  probe.style.color = trimmed;
-  probe.style.display = "none";
-  document.body.appendChild(probe);
-  const computed = getComputedStyle(probe).color;
+  const probe = activeDocument.createElement("span");
+  probe.setCssStyles({ color: trimmed, display: "none" });
+  activeDocument.body.appendChild(probe);
+  const computed = activeWindow.getComputedStyle(probe).color;
   probe.remove();
 
   const match = computed.match(/(\d+),\s*(\d+),\s*(\d+)/);

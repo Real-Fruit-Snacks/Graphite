@@ -277,9 +277,9 @@ export class GraphiteSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Hide data folder from the vault UI")
+      .setName("Exclude data folder from the vault UI")
       .setDesc(
-        "Hide the Graphite data folder from the file explorer, search, and graph. Files stay on disk and Graphite keeps using them."
+        "Add the Graphite data folder to Obsidian's excluded files, keeping it out of search, graph, and the quick switcher, and dimmed in the file explorer. Files stay on disk and Graphite keeps using them."
       )
       .addToggle((toggle) => {
         toggle

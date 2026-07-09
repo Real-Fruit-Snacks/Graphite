@@ -59,12 +59,6 @@ export default class GraphitePlugin extends Plugin {
     this.addCommand({
       id: "quick-add-task",
       name: "Quick Add Task",
-      hotkeys: [
-        {
-          modifiers: ["Mod", "Shift"],
-          key: "A"
-        }
-      ],
       callback: () => {
         new QuickAddModal(this.app, async (title) => {
           await this.store.createTask({ title });

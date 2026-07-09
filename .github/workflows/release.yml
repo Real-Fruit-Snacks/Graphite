@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -68,10 +70,44 @@ jobs:
           }
           NODE
 
+      - name: Extract release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const tag = process.env.RELEASE_TAG;
+          const lines = fs.readFileSync("CHANGELOG.md", "utf8").split(/\r?\n/);
+
+          const start = lines.findIndex((line) => line.trim() === `## ${tag}`);
+          let body = "";
+          if (start !== -1) {
+            const rest = lines.slice(start + 1);
+            const end = rest.findIndex((line) => line.startsWith("## "));
+            const section = (end === -1 ? rest : rest.slice(0, end)).join("\n");
+            // Trim surrounding blank lines and a trailing "---" divider.
+            body = section.replace(/\n*---\s*$/, "").trim();
+          }
+          if (!body) {
+            body = `Graphite ${tag}. See CHANGELOG.md for details.`;
+          }
+          fs.writeFileSync("RELEASE_BODY.md", body + "\n");
+          console.log(body);
+          NODE
+
+      - name: Generate build provenance attestations
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          body_path: RELEASE_BODY.md
           files: |
             manifest.json
             main.js

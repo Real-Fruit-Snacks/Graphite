@@ -259,14 +259,13 @@ function resolveColorToHex(value, cache) {
   if (cached !== void 0) {
     return cached;
   }
-  if (typeof document === "undefined") {
+  if (typeof activeDocument === "undefined") {
     return "#888888";
   }
-  const probe = document.createElement("span");
-  probe.style.color = trimmed;
-  probe.style.display = "none";
-  document.body.appendChild(probe);
-  const computed = getComputedStyle(probe).color;
+  const probe = activeDocument.createElement("span");
+  probe.setCssStyles({ color: trimmed, display: "none" });
+  activeDocument.body.appendChild(probe);
+  const computed = activeWindow.getComputedStyle(probe).color;
   probe.remove();
   const match = computed.match(/(\d+),\s*(\d+),\s*(\d+)/);
   if (!match) {
@@ -673,8 +672,8 @@ var GraphiteSettingTab = class extends import_obsidian3.PluginSettingTab {
         text.inputEl.blur();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("Hide data folder from the vault UI").setDesc(
-      "Hide the Graphite data folder from the file explorer, search, and graph. Files stay on disk and Graphite keeps using them."
+    new import_obsidian3.Setting(containerEl).setName("Exclude data folder from the vault UI").setDesc(
+      "Add the Graphite data folder to Obsidian's excluded files, keeping it out of search, graph, and the quick switcher, and dimmed in the file explorer. Files stay on disk and Graphite keeps using them."
     ).addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.hideDataFolderFromVault).onChange(async (value) => {
         this.plugin.settings.hideDataFolderFromVault = value;
@@ -873,55 +872,19 @@ var GraphiteSettingTab = class extends import_obsidian3.PluginSettingTab {
 
 // src/vaultVisibility.ts
 var import_obsidian4 = require("obsidian");
-var STYLE_EL_ID = "graphite-data-folder-visibility";
 var IGNORE_FILTERS_KEY = "userIgnoreFilters";
 var DataFolderVisibility = class {
   constructor(app) {
     this.app = app;
-    this.styleEl = null;
     this.lastFilterPath = null;
     this.warnedFilterFailure = false;
   }
-  /** Reconcile both mechanisms to the given folder path and hidden state. */
+  /** Reconcile the excluded-files entry to the given folder path and hidden state. */
   apply(folderPath, hidden) {
-    this.applyExplorerHiding(folderPath, hidden);
     this.applyExcludedFilter(folderPath, hidden);
   }
-  /** Remove the injected CSS. Excluded-files entries are left as-is. */
+  /** No transient UI state to tear down; excluded-files entries are left as-is. */
   destroy() {
-    var _a;
-    (_a = this.styleEl) == null ? void 0 : _a.remove();
-    this.styleEl = null;
-  }
-  applyExplorerHiding(folderPath, hidden) {
-    if (!hidden || !folderPath) {
-      if (this.styleEl) {
-        this.styleEl.textContent = "";
-      }
-      return;
-    }
-    const esc = cssAttrEscape(folderPath);
-    const supportsHas = typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("selector(:has(*))");
-    const rules = [
-      `.nav-folder-title[data-path="${esc}"] { display: none !important; }`,
-      `.nav-file-title[data-path^="${esc}/"] { display: none !important; }`
-    ];
-    if (supportsHas) {
-      rules.unshift(
-        `.nav-folder:has(> .nav-folder-title[data-path="${esc}"]) { display: none !important; }`
-      );
-    }
-    this.ensureStyleEl().textContent = rules.join("\n");
-  }
-  ensureStyleEl() {
-    if (this.styleEl && this.styleEl.isConnected) {
-      return this.styleEl;
-    }
-    const el = document.createElement("style");
-    el.id = STYLE_EL_ID;
-    document.head.appendChild(el);
-    this.styleEl = el;
-    return el;
   }
   applyExcludedFilter(folderPath, hidden) {
     const vault = this.app.vault;
@@ -965,14 +928,11 @@ var DataFolderVisibility = class {
     }
     this.warnedFilterFailure = true;
     new import_obsidian4.Notice(
-      `Graphite hid "${folderPath}" from the file explorer. To also hide it from search and graph, add it to Settings \u2192 Files and links \u2192 Excluded files.`,
+      `Graphite could not add "${folderPath}" to Obsidian's excluded files. To keep it out of search and dimmed in the file explorer, add it in Settings \u2192 Files and links \u2192 Excluded files.`,
       1e4
     );
   }
 };
-function cssAttrEscape(value) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
 function arraysEqual(a, b) {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
@@ -1446,12 +1406,12 @@ var KNOWN_PROPERTIES2 = /* @__PURE__ */ new Set([
   "repeat",
   "completedoccurrences"
 ]);
-function serializeTaskDocument(document2, tasks) {
+function serializeTaskDocument(document, tasks) {
   const orderedTasks = [...tasks].sort((a, b) => a.order - b.order);
   const tasksById = new Map(orderedTasks.map((task) => [task.id, task]));
   const serializedTaskIds = /* @__PURE__ */ new Set();
   const outputLines = [];
-  for (const block of document2.blocks) {
+  for (const block of document.blocks) {
     if (block.type === "raw") {
       outputLines.push(...block.lines);
       continue;
@@ -1628,9 +1588,9 @@ var TaskStore = class {
     }
     for (const file of files.sort((a, b) => a.path.localeCompare(b.path))) {
       const content = await this.app.vault.read(file);
-      const document2 = parseTaskDocument(content, file.path);
-      nextDocuments.set(file.path, document2);
-      for (const task of document2.tasks) {
+      const document = parseTaskDocument(content, file.path);
+      nextDocuments.set(file.path, document);
+      for (const task of document.tasks) {
         nextTasks.push({ ...withLoadedDefaults(task, file.path), order });
         order += 1;
       }
@@ -1963,14 +1923,14 @@ var TaskStore = class {
       tasksBySource.set(path, list);
     }
     for (const path of writtenSet) {
-      const document2 = this.documents.get(path);
-      if (!document2) {
+      const document = this.documents.get(path);
+      if (!document) {
         console.warn("[graphite] No parsed document for a just-written source; skipping.", { path });
         continue;
       }
       tasksBySource.set(
         path,
-        document2.tasks.map((task) => withLoadedDefaults(task, path))
+        document.tasks.map((task) => withLoadedDefaults(task, path))
       );
     }
     const nextTasks = [];
@@ -1987,9 +1947,9 @@ var TaskStore = class {
   async writeSources(sourcePaths, writtenPaths = []) {
     for (const sourcePath of dedupeStrings(sourcePaths.filter(Boolean))) {
       await this.ensureSourceDocument(sourcePath);
-      const document2 = this.documents.get(sourcePath) || { blocks: [], tasks: [] };
+      const document = this.documents.get(sourcePath) || { blocks: [], tasks: [] };
       const tasks = this.tasks.filter((task) => task.sourcePath === sourcePath).map((task) => normalizeTaskForSave(task, sourcePath));
-      const content = serializeTaskDocument(document2, tasks);
+      const content = serializeTaskDocument(document, tasks);
       const file = await this.ensureFile(sourcePath, "");
       if (!file) {
         continue;
@@ -2010,18 +1970,18 @@ var TaskStore = class {
     return writtenPaths;
   }
   reorderDocumentBlocksForSource(sourcePath) {
-    const document2 = this.documents.get(sourcePath);
-    if (!document2) {
+    const document = this.documents.get(sourcePath);
+    if (!document) {
       return;
     }
     const existingBlockIds = new Set(
-      document2.blocks.filter((block) => block.type === "task").map((block) => block.taskId)
+      document.blocks.filter((block) => block.type === "task").map((block) => block.taskId)
     );
     const orderedTaskIds = this.tasks.filter((task) => task.sourcePath === sourcePath && existingBlockIds.has(task.id)).sort((a, b) => a.order - b.order).map((task) => task.id);
     let cursor = 0;
     this.documents.set(sourcePath, {
-      ...document2,
-      blocks: document2.blocks.map((block) => {
+      ...document,
+      blocks: document.blocks.map((block) => {
         if (block.type !== "task") {
           return block;
         }
@@ -9293,12 +9253,6 @@ var GraphitePlugin = class extends import_obsidian16.Plugin {
     this.addCommand({
       id: "quick-add-task",
       name: "Quick Add Task",
-      hotkeys: [
-        {
-          modifiers: ["Mod", "Shift"],
-          key: "A"
-        }
-      ],
       callback: () => {
         new QuickAddModal(this.app, async (title) => {
           await this.store.createTask({ title });
