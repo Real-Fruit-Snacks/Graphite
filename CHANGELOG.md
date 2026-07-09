@@ -4,6 +4,12 @@ All notable changes to Graphite are documented here.
 
 ---
 
+## 0.1.2
+
+- Refreshed the plugin description shown in the community directory and settings.
+
+---
+
 ## 0.1.1
 
 Compliance and hardening pass ahead of community-directory submission.
