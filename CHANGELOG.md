@@ -4,6 +4,14 @@ All notable changes to Graphite are documented here.
 
 ---
 
+## 0.1.3
+
+- Capitalized the display name to **Graphite** in the plugin list and community
+  directory, matching the usual plugin naming convention. The plugin id is
+  unchanged, so existing installs and data are unaffected.
+
+---
+
 ## 0.1.2
 
 - Refreshed the plugin description shown in the community directory and settings.

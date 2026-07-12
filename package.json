@@ -1,6 +1,6 @@
 {
   "name": "obsidian-graphite-tasks",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Todoist-style projects, priorities, due dates, and recurring tasks — stored as plain Markdown you own.",
   "main": "main.js",
   "scripts": {
